@@ -5,6 +5,7 @@ const notionApiKey = 'YOUR_NOTION_API_KEY';
 
 // Function to check if an email response has been received from a client
 async function checkResponseReceived(requestDate) {
+  const today = new Date().toISOString().split('T')[0];  // Current date
   const notionApiUrl = `https://api.notion.com/v1/databases/${notionDbId}/query`;
 
   const response = await fetch(notionApiUrl, {
@@ -12,31 +13,58 @@ async function checkResponseReceived(requestDate) {
     headers: {
       'Authorization': `Bearer ${notionApiKey}`,
       'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28',  // Use the appropriate API version
+      'Notion-Version': '2024-09-25',
     },
     body: JSON.stringify({
       filter: {
-        property: 'Request Date',
-        date: {
-          equals: requestDate
-        }
+        and: [
+          {
+            property: 'Response Received',
+            checkbox: {
+              equals: false
+            }
+          },
+          {
+            property: 'Last Follow-Up Date',
+            date: {
+              before: today // Make sure last follow-up was not today
+            }
+          }
+        ]
       }
     })
   });
 
   const data = await response.json();
-
-  // Assuming the Notion DB returns results in `results` array
-  if (data.results && data.results.length > 0) {
-    const row = data.results[0];  // Take the first matching row
-    return !row.properties['Response Received'].checkbox;  // Check if response is not received
-  }
   
-  return null;  // If the request date is not found
+  // Continue processing if the request needs follow-up
+  return data.results && data.results.length > 0;
 }
 
-// Function to send a follow-up email using Bloom.io API
-async function sendFollowUpEmail(requestId) {
+// Function to update "Last Follow-Up Date" after sending email
+async function updateLastFollowUpDate(rowId) {
+  const today = new Date().toISOString().split('T')[0];
+  const notionUpdateUrl = `https://api.notion.com/v1/pages/${rowId}`;
+
+  await fetch(notionUpdateUrl, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${notionApiKey}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2024-09-25',
+    },
+    body: JSON.stringify({
+      properties: {
+        'Last Follow-Up Date': {
+          date: { start: today }
+        }
+      }
+    })
+  });
+}
+
+// Function to send a follow-up email using Bloom.io API and update the follow-up date
+async function sendFollowUpEmail(requestId, rowId) {
   const bloomApiUrl = `https://api.bloom.io/v1/requests/${requestId}/follow_up`;
 
   try {
@@ -44,10 +72,9 @@ async function sendFollowUpEmail(requestId) {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${bloomApi}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        // Add your follow-up email payload here, modify as needed
         subject: "Follow-up on your request",
         message: "We are following up on your request. Please let us know if you need further assistance.",
       })
@@ -56,6 +83,9 @@ async function sendFollowUpEmail(requestId) {
     const result = await response.json();
     if (response.ok) {
       console.log('Follow-up email sent successfully:', result);
+      
+      // Update "Last Follow-Up Date" after email is sent
+      await updateLastFollowUpDate(rowId);
     } else {
       console.error('Error sending follow-up email:', result);
     }
@@ -75,7 +105,7 @@ async function main() {
       headers: {
         'Authorization': `Bearer ${notionApiKey}`,
         'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28',
+        'Notion-Version': '2024-09-25',
       },
       body: JSON.stringify({
         filter: {
@@ -93,10 +123,11 @@ async function main() {
     for (const row of rows) {
       const requestDate = row.properties['Request Date'].date.start;  // Assuming `start` holds the request date
       const requestId = row.properties['Request ID'].rich_text[0].plain_text;  // Adjust if different in your DB
+      const rowId = row.id; // This will be used to update "Last Follow-Up Date" after sending email
 
       // Check if a response has been received, and if not, send follow-up email
       if (await checkResponseReceived(requestDate)) {
-        await sendFollowUpEmail(requestId);
+        await sendFollowUpEmail(requestId, rowId);  // Pass requestId and rowId
       }
     }
   } catch (error) {
